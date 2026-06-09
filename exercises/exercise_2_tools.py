@@ -1,13 +1,13 @@
-"""Bài Tập 2: Thêm Tools và Knowledge Base
-
-Hoàn thành các TODO để thêm tool và knowledge base entry mới.
-"""
+"""Exercise 2: Add tools and a knowledge base entry."""
 
 import asyncio
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -15,7 +15,7 @@ from langchain_core.tools import tool
 
 from common.llm import get_llm
 
-# Knowledge base
+
 LEGAL_KNOWLEDGE = [
     {
         "id": "ucc_breach",
@@ -23,72 +23,77 @@ LEGAL_KNOWLEDGE = [
         "text": (
             "Under the Uniform Commercial Code (UCC) Article 2, remedies for breach of contract "
             "include: (1) expectation damages; (2) consequential damages; (3) specific performance; "
-            "(4) cover damages. Statute of limitations is typically 4 years (UCC § 2-725)."
+            "(4) cover damages. Statute of limitations is typically 4 years (UCC Section 2-725)."
         ),
     },
-    # TODO: Thêm entry về luật lao động Việt Nam
-    # Gợi ý: id="labor_law", keywords=["lao động", "sa thải", ...], text="..."
+    {
+        "id": "labor_law",
+        "keywords": ["lao dong", "sa thai", "hop dong lao dong", "labor", "termination"],
+        "text": (
+            "Theo Bo luat Lao dong Viet Nam 2019, nguoi su dung lao dong co the don phuong "
+            "cham dut hop dong trong cac truong hop: (1) nguoi lao dong thuong xuyen khong "
+            "hoan thanh cong viec; (2) bi om dau, tai nan da dieu tri 12 thang chua khoi; "
+            "(3) thien tai, hoa hoan; (4) nguoi lao dong du tuoi nghi huu."
+        ),
+    },
 ]
 
 
 @tool
 def search_legal_knowledge(query: str) -> str:
-    """Tìm kiếm trong knowledge base pháp lý."""
+    """Search the legal knowledge base."""
     query_lower = query.lower()
     for entry in LEGAL_KNOWLEDGE:
         if any(kw in query_lower for kw in entry["keywords"]):
             return f"[{entry['id']}] {entry['text']}"
-    return "Không tìm thấy thông tin liên quan."
+    return "Khong tim thay thong tin lien quan."
 
 
-# TODO: Tạo tool check_statute_of_limitations
-# Gợi ý: nhận case_type (str), trả về thời hiệu khởi kiện
-# @tool
-# def check_statute_of_limitations(case_type: str) -> str:
-#     """Kiểm tra thời hiệu khởi kiện."""
-#     # YOUR CODE HERE
-#     pass
+@tool
+def check_statute_of_limitations(case_type: str) -> str:
+    """Check the statute of limitations by case type.
+
+    Args:
+        case_type: Case type: contract, tort, or property.
+    """
+    limits = {
+        "contract": "4 nam (UCC Section 2-725)",
+        "tort": "2-3 nam tuy bang",
+        "property": "5 nam",
+    }
+    return limits.get(case_type.lower(), "Khong xac dinh")
 
 
 async def main():
     load_dotenv()
     llm = get_llm()
-    
-    # TODO: Thêm tool mới vào danh sách
-    tools = [search_legal_knowledge]  # Thêm check_statute_of_limitations vào đây
+
+    tools = [search_legal_knowledge, check_statute_of_limitations]
     llm_with_tools = llm.bind_tools(tools)
-    
-    question = "Thời hiệu khởi kiện vụ vi phạm hợp đồng là bao lâu?"
-    
+
+    question = "Thoi hieu khoi kien vu vi pham hop dong la bao lau?"
+
     messages = [
-        SystemMessage(content="Bạn là chuyên gia pháp lý. Sử dụng tools để tra cứu thông tin."),
+        SystemMessage(content="Ban la chuyen gia phap ly. Su dung tools de tra cuu thong tin."),
         HumanMessage(content=question),
     ]
-    
-    print(f"Câu hỏi: {question}\n")
-    
-    # First LLM call - decide which tools to use
+
+    print(f"Cau hoi: {question}\n")
+
     response = await llm_with_tools.ainvoke(messages)
     messages.append(response)
-    
-    # Execute tools if requested
+
+    tool_map = {t.name: t for t in tools}
     if response.tool_calls:
         for tool_call in response.tool_calls:
-            print(f"🔧 Gọi tool: {tool_call['name']}")
-            tool_result = None
-            
-            if tool_call["name"] == "search_legal_knowledge":
-                tool_result = search_legal_knowledge.invoke(tool_call["args"])
-            # TODO: Thêm xử lý cho check_statute_of_limitations
-            
-            if tool_result:
-                messages.append(ToolMessage(content=tool_result, tool_call_id=tool_call["id"]))
-        
-        # Second LLM call - synthesize final answer
+            print(f"Calling tool: {tool_call['name']}")
+            tool_result = await tool_map[tool_call["name"]].ainvoke(tool_call["args"])
+            messages.append(ToolMessage(content=tool_result, tool_call_id=tool_call["id"]))
+
         final_response = await llm_with_tools.ainvoke(messages)
-        print(f"\n✅ Kết quả:\n{final_response.content}")
+        print(f"\nResult:\n{final_response.content}")
     else:
-        print(f"\n✅ Kết quả:\n{response.content}")
+        print(f"\nResult:\n{response.content}")
 
 
 if __name__ == "__main__":

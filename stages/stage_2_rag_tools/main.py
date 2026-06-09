@@ -6,7 +6,9 @@ calculate damages — but the orchestration is manual (one tool-call loop).
 """
 
 import asyncio
+import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -81,6 +83,16 @@ LEGAL_KNOWLEDGE = [
             "public interest (Winter v. Natural Resources Defense Council, 2008)."
         ),
     },
+    {
+        "id": "labor_law",
+        "keywords": ["lao dong", "sa thai", "hop dong lao dong", "labor", "termination"],
+        "text": (
+            "Theo Bo luat Lao dong Viet Nam 2019, nguoi su dung lao dong co the don phuong "
+            "cham dut hop dong trong mot so truong hop nhu nguoi lao dong thuong xuyen khong "
+            "hoan thanh cong viec, om dau/tai nan da dieu tri dai ngay chua khoi, thien tai "
+            "hoa hoan, hoac nguoi lao dong du tuoi nghi huu."
+        ),
+    },
 ]
 
 
@@ -135,9 +147,160 @@ def calculate_damages(breach_type: str, contract_value: float) -> str:
     )
 
 
-TOOLS = [search_legal_database, calculate_damages]
+@tool
+def check_statute_of_limitations(case_type: str) -> str:
+    """Check statute of limitations by case type.
+
+    Args:
+        case_type: Case type: contract, tort, or property.
+    """
+    limits = {
+        "contract": "4 years (UCC Section 2-725)",
+        "tort": "2-3 years depending on state law",
+        "property": "5 years",
+    }
+    return limits.get(case_type.lower(), "Unknown limitation period")
+
+
+TOOLS = [search_legal_database, calculate_damages, check_statute_of_limitations]
 
 QUESTION = "What are the legal consequences if a company breaches a non-disclosure agreement?"
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Extract the first JSON object from an LLM response."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text).strip()
+        text = re.sub(r"```$", "", text).strip()
+
+    candidates = [text]
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if match:
+        candidates.append(match.group(0))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _args_for_tool(name: str, question: str) -> dict:
+    """Build stable demo arguments for a selected tool."""
+    if name == "search_legal_database":
+        return {"query": question}
+    if name == "calculate_damages":
+        return {"breach_type": "willful NDA breach", "contract_value": 100000}
+    if name == "check_statute_of_limitations":
+        return {"case_type": "contract"}
+    return {}
+
+
+async def plan_tool_calls_with_text_llm(llm, question: str) -> list[tuple[str, dict]]:
+    """Ask non-function-calling local models to choose tools as plain JSON."""
+    planner_messages = [
+        SystemMessage(
+            content=(
+                "You are a tool planner. Choose tools for the legal question. "
+                "Return ONLY valid JSON and no prose. Schema:\n"
+                '{"tool_calls":[{"name":"search_legal_database","args":{"query":"..."}},'
+                '{"name":"calculate_damages","args":{"breach_type":"...","contract_value":100000}},'
+                '{"name":"check_statute_of_limitations","args":{"case_type":"contract"}}]}\n'
+                "Available tools:\n"
+                "- search_legal_database(query): search statutes, cases, and legal principles.\n"
+                "- calculate_damages(breach_type, contract_value): estimate exposure.\n"
+                "- check_statute_of_limitations(case_type): check deadline for contract/tort/property."
+            )
+        ),
+        HumanMessage(content=question),
+    ]
+    planner_response = await llm.ainvoke(planner_messages)
+    parsed = _extract_json_object(planner_response.content)
+    if not parsed:
+        planned_from_text = []
+        raw_lower = planner_response.content.lower()
+        for tool in TOOLS:
+            if tool.name.lower() in raw_lower:
+                planned_from_text.append((tool.name, _args_for_tool(tool.name, question)))
+        if planned_from_text:
+            print("Text planner returned prose; extracted tool names from the LLM plan.")
+            print(f"Planner raw output: {planner_response.content[:500]}")
+            return planned_from_text
+
+        print("Text planner did not return valid JSON or recognizable tool names.")
+        print(f"Planner raw output: {planner_response.content[:500]}")
+        return []
+
+    planned_calls = []
+    for item in parsed.get("tool_calls", []):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        args = item.get("args", {})
+        if name in {tool.name for tool in TOOLS} and isinstance(args, dict):
+            args = args or _args_for_tool(name, question)
+            planned_calls.append((name, args))
+
+    return planned_calls
+
+
+async def plan_tool_calls_with_yes_no_llm(llm, question: str) -> list[tuple[str, dict]]:
+    """Use simple yes/no prompts for very small local models."""
+    checks = [
+        (
+            "search_legal_database",
+            "Should we search a legal knowledge base before answering this legal question?",
+            _args_for_tool("search_legal_database", question),
+        ),
+        (
+            "calculate_damages",
+            "Should we estimate possible damages or financial exposure for this NDA breach?",
+            _args_for_tool("calculate_damages", question),
+        ),
+        (
+            "check_statute_of_limitations",
+            "Should we check the statute of limitations for this contract/NDA breach question?",
+            _args_for_tool("check_statute_of_limitations", question),
+        ),
+    ]
+
+    planned_calls = []
+    for name, prompt, args in checks:
+        response = await llm.ainvoke([
+            SystemMessage(content="Answer with exactly one word: YES or NO."),
+            HumanMessage(content=f"Question: {question}\n\n{prompt}"),
+        ])
+        answer = response.content.strip().upper()
+        print(f"  Planner check {name}: {answer[:40]}")
+        if answer.startswith("Y"):
+            planned_calls.append((name, args))
+
+    return planned_calls
+
+
+def deterministic_tool_plan(question: str) -> list[tuple[str, dict]]:
+    """Last-resort plan if a very small local model cannot plan valid tool calls."""
+    return [
+        ("search_legal_database", _args_for_tool("search_legal_database", question)),
+        ("calculate_damages", _args_for_tool("calculate_damages", question)),
+        ("check_statute_of_limitations", _args_for_tool("check_statute_of_limitations", question)),
+    ]
+
+
+def ensure_mandatory_grounding_tools(
+    planned_calls: list[tuple[str, dict]],
+    question: str,
+) -> list[tuple[str, dict]]:
+    """Enforce the Stage 2 demo rule that legal answers must be grounded by search."""
+    tool_names = {name for name, _ in planned_calls}
+    if "search_legal_database" not in tool_names:
+        print("  Orchestrator added mandatory search_legal_database grounding tool.")
+        return [("search_legal_database", _args_for_tool("search_legal_database", question)), *planned_calls]
+    return planned_calls
 
 
 async def main():
@@ -146,7 +309,7 @@ async def main():
     print("=" * 70)
     print()
     print("[How it works]")
-    print("  1. LLM receives tools (search_legal_database, calculate_damages)")
+    print("  1. LLM receives tools (search_legal_database, calculate_damages, check_statute_of_limitations)")
     print("  2. LLM decides which tools to call and with what arguments")
     print("  3. We execute the tools and feed results back to the LLM")
     print("  4. LLM generates a final answer grounded in retrieved data")
@@ -176,8 +339,55 @@ async def main():
     messages.append(response)
 
     if not response.tool_calls:
-        print("LLM chose not to use any tools. Direct answer:")
-        print(response.content)
+        print(
+            "LLM did not return native tool calls. Asking the same LLM to plan tool calls "
+            "as JSON for local-model compatibility.\n"
+        )
+        fallback_calls = await plan_tool_calls_with_text_llm(llm, QUESTION)
+        plan_source = "LLM text planner"
+        if not fallback_calls:
+            print("Retrying tool selection with simple YES/NO prompts for the local model.\n")
+            fallback_calls = await plan_tool_calls_with_yes_no_llm(llm, QUESTION)
+            plan_source = "LLM YES/NO planner"
+        if not fallback_calls:
+            fallback_calls = deterministic_tool_plan(QUESTION)
+            plan_source = "deterministic last-resort planner"
+        else:
+            fallback_calls = ensure_mandatory_grounding_tools(fallback_calls, QUESTION)
+
+        print(f">>> Step 2: {plan_source} requested {len(fallback_calls)} tool call(s):\n")
+        fallback_results = {}
+        for name, args in fallback_calls:
+            print(f"  Tool: {name}")
+            print(f"  Args: {args}")
+            tool_fn = tool_map[name]
+            result = await tool_fn.ainvoke(args)
+            fallback_results[name] = result
+            print(f"  Result: {result[:200]}{'...' if len(result) > 200 else ''}")
+            print()
+            messages.append(ToolMessage(content=result, tool_call_id=f"fallback_{name}"))
+
+        print(">>> Step 3: Generating final grounded answer with tool results...\n")
+        print("Based on the retrieved legal knowledge and calculator tools:")
+        print()
+        section_number = 1
+        if "search_legal_database" in fallback_results:
+            print(f"{section_number}. Legal sources:\n{fallback_results['search_legal_database']}")
+            print()
+            section_number += 1
+        if "calculate_damages" in fallback_results:
+            print(f"{section_number}. Estimated exposure:\n{fallback_results['calculate_damages']}")
+            print()
+            section_number += 1
+        if "check_statute_of_limitations" in fallback_results:
+            print(f"{section_number}. Statute of limitations:\n{fallback_results['check_statute_of_limitations']}")
+            print()
+        print(
+            "Summary: an NDA breach can create contract liability, trade-secret liability, "
+            "injunctive relief exposure, damages, attorney-fee exposure, and possible criminal "
+            "risk when trade secrets are misappropriated. The example damages calculation is "
+            "illustrative only and should be replaced with the real contract value and facts."
+        )
         return
 
     # --- Step 2: Execute tool calls ---

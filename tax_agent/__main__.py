@@ -7,9 +7,10 @@ import logging
 import os
 
 import uvicorn
-from dotenv import load_dotenv
 
-load_dotenv()
+from common.env import load_project_env
+
+load_project_env()
 
 import httpx
 

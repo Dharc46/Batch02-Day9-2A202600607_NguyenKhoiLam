@@ -8,9 +8,10 @@ import os
 import sys
 
 import httpx
-from dotenv import load_dotenv
 
-load_dotenv()
+from common.env import load_project_env
+
+load_project_env()
 
 CUSTOMER_AGENT_URL = os.getenv("CUSTOMER_AGENT_URL", "http://localhost:10100")
 
@@ -25,7 +26,7 @@ async def main() -> None:
     print(f"Question: {QUESTION}")
     print("-" * 60)
 
-    async with httpx.AsyncClient(timeout=300.0) as http_client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as http_client:
         # Resolve agent card
         card_url = f"{CUSTOMER_AGENT_URL}/.well-known/agent.json"
         try:
@@ -61,10 +62,18 @@ async def main() -> None:
         )
 
         print("Sending request (this may take 30-60s while agents chain)...\n")
-        response = await client.send_message(request)
+        response = await client.send_message(request, http_kwargs={"timeout": None})
 
         # Parse response
         result_text = ""
+
+        def append_text_from_parts(parts) -> None:
+            nonlocal result_text
+            for part in parts:
+                p = part.root if hasattr(part, "root") else part
+                if hasattr(p, "text"):
+                    result_text += p.text
+
         if hasattr(response, "root"):
             root = response.root
             if hasattr(root, "result"):
@@ -72,16 +81,18 @@ async def main() -> None:
                 # Task with artifacts
                 if hasattr(result, "artifacts") and result.artifacts:
                     for artifact in result.artifacts:
-                        for part in artifact.parts:
-                            p = part.root if hasattr(part, "root") else part
-                            if hasattr(p, "text"):
-                                result_text += p.text
+                        append_text_from_parts(artifact.parts)
                 # Message with parts
                 elif hasattr(result, "parts") and result.parts:
-                    for part in result.parts:
-                        p = part.root if hasattr(part, "root") else part
-                        if hasattr(p, "text"):
-                            result_text += p.text
+                    append_text_from_parts(result.parts)
+                # Failed/completed Task status message
+                elif (
+                    hasattr(result, "status")
+                    and result.status
+                    and getattr(result.status, "message", None)
+                    and getattr(result.status.message, "parts", None)
+                ):
+                    append_text_from_parts(result.status.message.parts)
 
         if result_text:
             print("RESPONSE:")
