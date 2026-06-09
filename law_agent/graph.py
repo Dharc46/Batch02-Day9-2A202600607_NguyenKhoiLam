@@ -35,6 +35,7 @@ def _last_wins(a: str, b: str) -> str:
 
 class LawState(TypedDict):
     question: str
+    db_context: str
     context_id: str
     trace_id: str
     delegation_depth: int
@@ -63,6 +64,14 @@ async def analyze_law(state: LawState) -> dict:
             )
         ),
         HumanMessage(content=state["question"]),
+        HumanMessage(
+            content=(
+                "Local database context from data/standardized:\n"
+                f"{state.get('db_context', '')}\n\n"
+                "Use this context where relevant and cite source numbers like [1], [2]. "
+                "If it is not relevant, say so briefly."
+            )
+        ),
     ]
     result = await llm.ainvoke(messages)
     return {"law_analysis": result.content}
@@ -179,6 +188,8 @@ async def aggregate(state: LawState) -> dict:
     llm = get_llm()
 
     sections: list[str] = []
+    if state.get("db_context"):
+        sections.append(f"## Retrieved Local Database Context\n{state['db_context']}")
     if state.get("law_analysis"):
         sections.append(f"## Legal Analysis\n{state['law_analysis']}")
     if state.get("tax_result"):

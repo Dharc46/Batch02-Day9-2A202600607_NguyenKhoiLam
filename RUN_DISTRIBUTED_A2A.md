@@ -2,6 +2,14 @@
 
 This guide starts the complete Stage 5 distributed system and the browser demo interface.
 
+The agents use the local markdown database under:
+
+```text
+data/standardized
+```
+
+Retrieved chunks are injected into the Law, Tax, Compliance, Stage 4, and interface demo prompts as grounding context.
+
 ## 1. Prerequisites
 
 - Windows PowerShell
@@ -48,6 +56,12 @@ LLM_PROVIDER=ollama
 OLLAMA_MODEL=qwen2.5:0.5b
 OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_API_KEY=ollama
+```
+
+Confirm the local database exists:
+
+```powershell
+Get-ChildItem .\data\standardized -Recurse -Filter *.md
 ```
 
 ## 4. Start The Distributed A2A Services
@@ -124,6 +138,7 @@ The interface includes:
 
 - Stage 4 in-process multi-agent demo
 - Stage 5 distributed A2A demo
+- Retrieval from `data/standardized` as the local legal/news database
 - Service health checks for all A2A services
 - Agent timeline, timings, intermediate outputs, and final response
 

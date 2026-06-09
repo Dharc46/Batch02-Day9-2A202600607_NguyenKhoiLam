@@ -22,6 +22,7 @@ from a2a.types import AgentCard, Message, MessageSendParams, Part, Role, SendMes
 
 from common.a2a_client import _extract_text
 from common.env import load_project_env
+from common.retrieval import format_context
 
 load_project_env()
 
@@ -132,6 +133,7 @@ async def run_stage4(request: AskRequest) -> dict[str, Any]:
 
     state: dict[str, Any] = {
         "question": request.question,
+        "db_context": format_context(request.question),
         "law_analysis": "",
         "tax_result": "",
         "compliance_result": "",

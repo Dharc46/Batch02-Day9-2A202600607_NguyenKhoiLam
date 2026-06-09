@@ -12,6 +12,7 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, TextPart
 
+from common.retrieval import build_grounded_question
 from tax_agent.graph import create_graph
 
 logger = logging.getLogger(__name__)
@@ -48,8 +49,9 @@ class TaxAgentExecutor(AgentExecutor):
         await updater.start_work()
 
         try:
+            grounded_question = build_grounded_question(question, "tax specialist")
             result = await _get_graph().ainvoke(
-                {"messages": [HumanMessage(content=question)]},
+                {"messages": [HumanMessage(content=grounded_question)]},
                 config={"configurable": {"thread_id": context_id}},
             )
 

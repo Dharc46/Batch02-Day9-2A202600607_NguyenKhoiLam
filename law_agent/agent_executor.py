@@ -10,6 +10,7 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, TextPart
 
+from common.retrieval import format_context
 from law_agent.graph import create_graph
 
 logger = logging.getLogger(__name__)
@@ -39,9 +40,11 @@ class LawAgentExecutor(AgentExecutor):
         await updater.start_work()
 
         try:
+            db_context = format_context(question)
             result = await _graph.ainvoke(
                 {
                     "question": question,
+                    "db_context": db_context,
                     "context_id": context_id,
                     "trace_id": trace_id,
                     "delegation_depth": depth,

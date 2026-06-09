@@ -17,6 +17,7 @@ from langgraph.constants import Send
 from langgraph.graph import END, StateGraph
 
 from common.llm import get_llm
+from common.retrieval import format_context
 
 
 def _last_wins(a: str, b: str) -> str:
@@ -26,6 +27,7 @@ def _last_wins(a: str, b: str) -> str:
 
 class LegalState(TypedDict):
     question: str
+    db_context: str
     law_analysis: str
     tax_result: Annotated[str, _last_wins]
     compliance_result: Annotated[str, _last_wins]
@@ -45,6 +47,13 @@ async def analyze_law(state: LegalState) -> dict:
             )
         ),
         HumanMessage(content=state["question"]),
+        HumanMessage(
+            content=(
+                "Local database context from data/standardized:\n"
+                f"{state.get('db_context', '')}\n\n"
+                "Use this context where relevant and cite source numbers like [1], [2]."
+            )
+        ),
     ]
     result = await llm.ainvoke(messages)
     print(f"  [Node: analyze_law] Done ({len(result.content)} chars)")
@@ -81,6 +90,7 @@ async def call_tax_specialist(state: LegalState) -> dict:
             )
         ),
         HumanMessage(content=f"Question: {state['question']}\n\nLegal analysis: {state['law_analysis']}"),
+        HumanMessage(content=f"Local database context:\n{state.get('db_context', '')}"),
     ]
     result = await llm.ainvoke(messages)
     print(f"  [Node: call_tax_specialist] Done ({len(result.content)} chars)")
@@ -100,6 +110,7 @@ async def call_compliance_specialist(state: LegalState) -> dict:
             )
         ),
         HumanMessage(content=f"Question: {state['question']}\n\nLegal analysis: {state['law_analysis']}"),
+        HumanMessage(content=f"Local database context:\n{state.get('db_context', '')}"),
     ]
     result = await llm.ainvoke(messages)
     print(f"  [Node: call_compliance_specialist] Done ({len(result.content)} chars)")
@@ -119,6 +130,7 @@ async def call_privacy_specialist(state: LegalState) -> dict:
             )
         ),
         HumanMessage(content=f"Question: {state['question']}\n\nLegal analysis: {state['law_analysis']}"),
+        HumanMessage(content=f"Local database context:\n{state.get('db_context', '')}"),
     ]
     result = await llm.ainvoke(messages)
     print(f"  [Node: call_privacy_specialist] Done ({len(result.content)} chars)")
@@ -131,6 +143,8 @@ async def aggregate(state: LegalState) -> dict:
     llm = get_llm()
 
     sections: list[str] = []
+    if state.get("db_context"):
+        sections.append(f"## Retrieved Local Database Context\n{state['db_context']}")
     if state.get("law_analysis"):
         sections.append(f"## Legal Analysis\n{state['law_analysis']}")
     if state.get("tax_result"):
@@ -196,6 +210,7 @@ async def main():
     graph = create_graph()
     result = await graph.ainvoke({
         "question": QUESTION,
+        "db_context": format_context(QUESTION),
         "law_analysis": "",
         "tax_result": "",
         "compliance_result": "",
